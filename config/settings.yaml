@@ -1,1 +1,16 @@
+sql_connection:
+  host: "xxxxxx"
+  port: 1234
 
+extractions:
+  - database: "xxxxx"
+    table: "dbo.xxxx"
+    file_prefix: "tv_report"
+  - database: "another_db"
+    table: "dbo.another_table"
+    file_prefix: "marketing_extract"
+
+sftp:
+  host: "sftp.your-destination.com"
+  port: 22
+  remote_dir: "/data/incoming"
