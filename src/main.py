@@ -3,7 +3,6 @@ import sys
 import logging
 import yaml
 import pandas as pd
-import pyodbc
 import paramiko
 from sqlalchemy import create_engine, text
 from datetime import datetime
@@ -21,9 +20,10 @@ logging.basicConfig(
     handlers=[logging.FileHandler(log_file), logging.StreamHandler()]
 )
 
-# --- DB CONNECTION via SQLAlchemy (fixes pandas warning) ---
+
+# --- DB ENGINE ---
 def get_db_engine(server, port, database):
-    """Creates a SQLAlchemy engine using Kerberos (Trusted_Connection)."""
+    """SQLAlchemy engine using Kerberos (Trusted_Connection)."""
     conn_str = (
         f"mssql+pyodbc://@{server},{port}/{database}"
         f"?driver=ODBC+Driver+18+for+SQL+Server"
@@ -33,19 +33,42 @@ def get_db_engine(server, port, database):
     )
     return create_engine(conn_str, fast_executemany=True)
 
+
+# --- SFTP HELPER ---
+def sftp_mkdir_p(sftp, remote_dir):
+    """Recursively create remote directories if they don't exist."""
+    if remote_dir == '/':
+        return  # root always exists
+    dirs = remote_dir.strip('/').split('/')
+    path = ''
+    for d in dirs:
+        path += f'/{d}'
+        try:
+            sftp.stat(path)
+        except FileNotFoundError:
+            logging.info(f"Creating remote directory: {path}")
+            sftp.mkdir(path)
+
+
 # --- EXTRACTION ---
 def process_extraction(task, sql_conf, sftp_client, remote_dir):
     """Handles extraction and SFTP upload for a single table."""
-    db_name    = task['database']
-    table_name = task['table']
-    file_name  = f"{task['file_prefix']}_{datetime.now().strftime('%Y%m%d')}.csv"
-    local_path = os.path.join('/tmp', file_name)          # ✅ local temp file
-    remote_path = f"{remote_dir}/{file_name}"             # ✅ full remote path
+    db_name     = task['database']
+    table_name  = task['table']
+    file_name   = f"{task['file_prefix']}_{datetime.now().strftime('%Y%m%d')}.csv"
+    local_path  = os.path.join('/tmp', file_name)
+
+    # Build remote path — handle root dir edge case
+    if remote_dir.rstrip('/') == '':
+        remote_path = f"/{file_name}"
+    else:
+        remote_path = f"{remote_dir.rstrip('/')}/{file_name}"
 
     logging.info(f"--- Starting Task: {db_name}.{table_name} ---")
+    logging.info(f"Remote target: {remote_path}")
 
     try:
-        # Extract using SQLAlchemy engine
+        # Extract
         engine = get_db_engine(sql_conf['host'], sql_conf['port'], db_name)
         with engine.connect() as conn:
             df = pd.read_sql(text(f"SELECT * FROM {table_name}"), conn)
@@ -55,12 +78,14 @@ def process_extraction(task, sql_conf, sftp_client, remote_dir):
             lambda x: x.strip() if isinstance(x, str) else x
         ))
 
-        # Save locally to /tmp
         df.to_csv(local_path, index=False, encoding='utf-8-sig')
         logging.info(f"Extracted {len(df)} rows → {local_path}")
 
-        # Upload to SFTP
-        sftp_client.put(local_path, remote_path)          # ✅ local_path → remote_path
+        # Ensure remote dir exists
+        sftp_mkdir_p(sftp_client, remote_dir)
+
+        # Upload (confirm=False avoids stat() check on remote path)
+        sftp_client.put(local_path, remote_path, confirm=False)
         logging.info(f"Uploaded → SFTP: {remote_path}")
 
         return True
@@ -70,8 +95,9 @@ def process_extraction(task, sql_conf, sftp_client, remote_dir):
         return False
 
     finally:
-        if os.path.exists(local_path):                    # ✅ always clean up
+        if os.path.exists(local_path):
             os.remove(local_path)
+
 
 # --- MAIN ---
 def main():
@@ -83,7 +109,7 @@ def main():
         logging.critical(f"Config load failed: {e}")
         sys.exit(1)
 
-    # Guard: ensure Kerberos ticket exists before attempting SQL
+    # Guard: verify Kerberos ticket exists
     if os.system("klist -s") != 0:
         logging.critical("No valid Kerberos ticket. Run kinit first.")
         sys.exit(1)
@@ -98,6 +124,16 @@ def main():
         )
         sftp = paramiko.SFTPClient.from_transport(transport)
         logging.info("SFTP connection established.")
+
+        # Log what's available at root to help debug remote_dir issues
+        try:
+            root_ls = sftp.listdir('/')
+            logging.info(f"SFTP root listing: {root_ls}")
+            cwd = sftp.getcwd()
+            logging.info(f"SFTP default CWD: {cwd}")
+        except Exception:
+            pass
+
     except Exception as e:
         logging.critical(f"SFTP connection failed: {e}")
         sys.exit(1)
@@ -115,6 +151,7 @@ def main():
 
     if success_count < len(tasks):
         sys.exit(1)
+
 
 if __name__ == "__main__":
     main()
