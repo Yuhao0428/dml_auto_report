@@ -41,7 +41,7 @@ The following must be installed on the Ubuntu server:
 ### **Step 1: Clone and Environment Setup**
 ```bash
 # Navigate to the project root
-cd /home/administrator/mediafacts_etl
+cd /home/administrator/dml_auto_report
 
 # Create virtual environment
 python3 -m venv venv
@@ -98,7 +98,7 @@ To test the pipeline manually:
 The project is designed to run via Cron. Add the following entry to `crontab -e`:
 ```text
 # Run at 2:00 AM every day
-00 02 * * * /bin/bash /home/administrator/mediafacts_etl/run_etl.sh >> /home/administrator/mediafacts_etl/logs/cron_error.log 2>&1
+00 02 * * * /bin/bash /home/administrator/dml_auto_report/run_etl.sh >> /home/administrator/dml_auto_report/logs/cron_error.log 2>&1
 ```
 
 ### **Monitoring**
@@ -118,7 +118,7 @@ The project is designed to run via Cron. Add the following entry to `crontab -e`
 
 ## **8. Project Structure**
 ```text
-mediafacts_etl/
+dml_auto_report/
 ├── config/
 │   └── settings.yaml    # Task metadata (Add/Remove tables here)
 ├── src/
