@@ -1,9 +1,3 @@
-A professional README is the most important part of a hand-over. It ensures that even a year from now, someone can step in and fix a bug or add a database without needing you in the room.
-
-Here is the finalized, high-standard `README.md` for your project.
-
----
-
 # **Project: DML  Multi-Database ETL Pipeline**
 
 ## **1. Overview**
