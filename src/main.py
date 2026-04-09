@@ -1,102 +1,120 @@
 import os
+import sys
 import logging
 import yaml
 import pandas as pd
 import pyodbc
 import paramiko
+from sqlalchemy import create_engine, text
 from datetime import datetime
 from dotenv import load_dotenv
 
-# --- INITIALIZATION ---
 load_dotenv()
+
+# --- LOGGING ---
 log_dir = os.path.join(os.path.dirname(__file__), '..', 'logs')
 os.makedirs(log_dir, exist_ok=True)
 log_file = os.path.join(log_dir, f"etl_master_{datetime.now().strftime('%Y%m%d')}.log")
-
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s [%(levelname)s] %(message)s',
     handlers=[logging.FileHandler(log_file), logging.StreamHandler()]
 )
 
-def get_db_connection(server, port, database):
-    """Creates a connection for a specific database using Kerberos."""
+# --- DB CONNECTION via SQLAlchemy (fixes pandas warning) ---
+def get_db_engine(server, port, database):
+    """Creates a SQLAlchemy engine using Kerberos (Trusted_Connection)."""
     conn_str = (
-        f"Driver={{ODBC Driver 18 for SQL Server}};"
-        f"Server={server},{port};"
-        f"Database={database};"
-        f"Trusted_Connection=yes;Encrypt=yes;TrustServerCertificate=yes;"
+        f"mssql+pyodbc://@{server},{port}/{database}"
+        f"?driver=ODBC+Driver+18+for+SQL+Server"
+        f"&Trusted_Connection=yes"
+        f"&Encrypt=yes"
+        f"&TrustServerCertificate=yes"
     )
-    return pyodbc.connect(conn_str)
+    return create_engine(conn_str, fast_executemany=True)
 
+# --- EXTRACTION ---
 def process_extraction(task, sql_conf, sftp_client, remote_dir):
-    """Handles the extraction and upload for a single table."""
-    db_name = task['database']
+    """Handles extraction and SFTP upload for a single table."""
+    db_name    = task['database']
     table_name = task['table']
-    file_name = f"{task['file_prefix']}_{datetime.now().strftime('%Y%m%d')}.csv"
-    
-    logging.info(f"--- Starting Task: {db_name}.{table_name} ---")
-    
-    try:
-        # Extraction
-        with get_db_connection(sql_conf['host'], sql_conf['port'], db_name) as conn:
-            query = f"SELECT * FROM {table_name}"
-            df = pd.read_sql(query, conn)
-            
-            # Clean data (standard SQL Server string trimming)
-            df = df.applymap(lambda x: x.strip() if isinstance(x, str) else x)
-            
-            df.to_csv(file_name, index=False)
-            logging.info(f"Successfully extracted {len(df)} rows to {file_name}")
+    file_name  = f"{task['file_prefix']}_{datetime.now().strftime('%Y%m%d')}.csv"
+    local_path = os.path.join('/tmp', file_name)          # ✅ local temp file
+    remote_path = f"{remote_dir}/{file_name}"             # ✅ full remote path
 
-        # Upload
-        remote_path = f"{remote_dir}/{file_name}"
-        sftp_client.put(file_name, remote_path)
-        logging.info(f"Successfully uploaded to SFTP: {remote_path}")
-        
-        # Cleanup local file
-        os.remove(file_name)
+    logging.info(f"--- Starting Task: {db_name}.{table_name} ---")
+
+    try:
+        # Extract using SQLAlchemy engine
+        engine = get_db_engine(sql_conf['host'], sql_conf['port'], db_name)
+        with engine.connect() as conn:
+            df = pd.read_sql(text(f"SELECT * FROM {table_name}"), conn)
+
+        # Clean strings
+        df = df.apply(lambda col: col.map(
+            lambda x: x.strip() if isinstance(x, str) else x
+        ))
+
+        # Save locally to /tmp
+        df.to_csv(local_path, index=False, encoding='utf-8-sig')
+        logging.info(f"Extracted {len(df)} rows → {local_path}")
+
+        # Upload to SFTP
+        sftp_client.put(local_path, remote_path)          # ✅ local_path → remote_path
+        logging.info(f"Uploaded → SFTP: {remote_path}")
+
         return True
 
     except Exception as e:
-        logging.error(f"Failed task {db_name}.{table_name}: {str(e)}")
-        if os.path.exists(file_name):
-            os.remove(file_name)
+        logging.error(f"Failed task {db_name}.{table_name}: {e}", exc_info=True)
         return False
 
+    finally:
+        if os.path.exists(local_path):                    # ✅ always clean up
+            os.remove(local_path)
+
+# --- MAIN ---
 def main():
-    # 1. Load Config
+    config_path = os.path.join(os.path.dirname(__file__), '..', 'config', 'settings.yaml')
     try:
-        with open("config/settings.yaml", "r") as f:
+        with open(config_path) as f:
             conf = yaml.safe_load(f)
     except Exception as e:
         logging.critical(f"Config load failed: {e}")
-        return
+        sys.exit(1)
 
-    # 2. Setup SFTP Connection once
+    # Guard: ensure Kerberos ticket exists before attempting SQL
+    if os.system("klist -s") != 0:
+        logging.critical("No valid Kerberos ticket. Run kinit first.")
+        sys.exit(1)
+
+    # Setup SFTP
+    sftp, transport = None, None
     try:
         transport = paramiko.Transport((conf['sftp']['host'], conf['sftp']['port']))
         transport.connect(
-            username=os.getenv('SFTP_USER'), 
+            username=os.getenv('SFTP_USER'),
             password=os.getenv('SFTP_PASS')
         )
         sftp = paramiko.SFTPClient.from_transport(transport)
+        logging.info("SFTP connection established.")
     except Exception as e:
-        logging.critical(f"SFTP Connection failed: {e}")
-        return
+        logging.critical(f"SFTP connection failed: {e}")
+        sys.exit(1)
 
-    # 3. Iterate through all extractions
-    success_count = 0
-    total_tasks = len(conf['extractions'])
-    
-    for task in conf['extractions']:
-        if process_extraction(task, conf['sql_connection'], sftp, conf['sftp']['remote_dir']):
-            success_count += 1
+    # Run all extractions
+    tasks = conf.get('extractions', [])
+    success_count = sum(
+        process_extraction(task, conf['sql_connection'], sftp, conf['sftp']['remote_dir'])
+        for task in tasks
+    )
 
-    # 4. Final Wrap-up
-    logging.info(f"ETL Run Finished. Success: {success_count}/{total_tasks}")
+    logging.info(f"ETL complete: {success_count}/{len(tasks)} succeeded.")
     sftp.close()
     transport.close()
+
+    if success_count < len(tasks):
+        sys.exit(1)
 
 if __name__ == "__main__":
     main()
