@@ -1,0 +1,7 @@
+config/settings.yaml
+config/settings.yaml
+.env
+venv/
+wangyu.keytab
+
+logs/
