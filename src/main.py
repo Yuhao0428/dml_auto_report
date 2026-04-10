@@ -70,8 +70,19 @@ def process_extraction(task, sql_conf, sftp_client, remote_dir):
     try:
         # Extract
         engine = get_db_engine(sql_conf['host'], sql_conf['port'], db_name)
+        query = text(f"""
+            SELECT 
+                customername AS Kunde,
+                dispositionid AS Schaltungsid,
+                releasedate AS Datum,
+                targetgroupname AS Zielgruppe,
+                grp AS GRP (%),
+                bruttoreichweite AS KTS (Mio.)
+            FROM {table_name}
+            WHERE grp IS NOT NULL OR bruttoreichweite IS NOT NULL
+        """)
         with engine.connect() as conn:
-            df = pd.read_sql(text(f"SELECT * FROM {table_name}"), conn)
+            df = pd.read_sql(query, conn)
 
         # Clean strings
         df = df.apply(lambda col: col.map(
