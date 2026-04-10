@@ -1,4 +1,5 @@
 import os
+import re
 import sys
 import logging
 import yaml
@@ -38,7 +39,7 @@ def get_db_engine(server, port, database):
 def sftp_mkdir_p(sftp, remote_dir):
     """Recursively create remote directories if they don't exist."""
     if remote_dir == '/':
-        return  # root always exists
+        return
     dirs = remote_dir.strip('/').split('/')
     path = ''
     for d in dirs:
@@ -50,15 +51,47 @@ def sftp_mkdir_p(sftp, remote_dir):
             sftp.mkdir(path)
 
 
+# --- SQL HELPERS ---
+def validate_table_name(table_name):
+    """Allow only SQL Server-style identifiers like db.schema.table or schema.table."""
+    pattern = r'^[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*){0,2}$'
+    if not re.fullmatch(pattern, table_name):
+        raise ValueError(f"Invalid table name: {table_name}")
+    return table_name
+
+
+def get_reach_column(table_name):
+    """Use TV-specific reach column when the table name contains 'tv'."""
+    return 'bruttosehbeteiligung' if 'tv' in table_name.lower() else 'bruttoreichweite'
+
+
+def build_query(table_name):
+    """Build the extraction SQL dynamically based on table type."""
+    validated_table = validate_table_name(table_name)
+    reach_column = get_reach_column(validated_table)
+
+    return text(f"""
+        SELECT
+            customername     AS [Kunde],
+            dispositionid    AS [SchaltungsID],
+            releasedate      AS [Datum],
+            targetgroupname  AS [Zielgruppe],
+            grp              AS [GRP (%)],
+            {reach_column}   AS [KTS (Mio.)]
+        FROM {validated_table}
+        WHERE grp IS NOT NULL
+           OR {reach_column} IS NOT NULL
+    """)
+
+
 # --- EXTRACTION ---
 def process_extraction(task, sql_conf, sftp_client, remote_dir):
     """Handles extraction and SFTP upload for a single table."""
-    db_name     = task['database']
-    table_name  = task['table']
-    file_name   = f"{task['file_prefix']}_{datetime.now().strftime('%Y%m%d')}.csv"
-    local_path  = os.path.join('/tmp', file_name)
+    db_name = task['database']
+    table_name = task['table']
+    file_name = f"{task['file_prefix']}_{datetime.now().strftime('%Y%m%d')}.csv"
+    local_path = os.path.join('/tmp', file_name)
 
-    # Build remote path — handle root dir edge case
     if remote_dir.rstrip('/') == '':
         remote_path = f"/{file_name}"
     else:
@@ -68,37 +101,24 @@ def process_extraction(task, sql_conf, sftp_client, remote_dir):
     logging.info(f"Remote target: {remote_path}")
 
     try:
-        # Extract
+        query = build_query(table_name)
+        reach_column = get_reach_column(table_name)
+        logging.info(f"Using reach column '{reach_column}' for table '{table_name}'")
+
         engine = get_db_engine(sql_conf['host'], sql_conf['port'], db_name)
-        query = text(f"""
-            SELECT
-                customername     AS [Kunde],
-                dispositionid    AS [SchaltungsID],
-                releasedate      AS [Datum],
-                targetgroupname  AS [Zielgruppe],
-                grp              AS [GRP (%)],
-                bruttosehbeteiligung AS [KTS (Mio.)]
-            FROM {table_name}
-            WHERE grp IS NOT NULL
-               OR bruttoreichweite IS NOT NULL
-        """)
         with engine.connect() as conn:
             df = pd.read_sql(query, conn)
 
-        # Clean strings
         df = df.apply(lambda col: col.map(
             lambda x: x.strip() if isinstance(x, str) else x
         ))
 
         df.to_csv(local_path, index=False, encoding='utf-8-sig')
-        logging.info(f"Extracted {len(df)} rows → {local_path}")
+        logging.info(f"Extracted {len(df)} rows -> {local_path}")
 
-        # Ensure remote dir exists
         sftp_mkdir_p(sftp_client, remote_dir)
-
-        # Upload (confirm=False avoids stat() check on remote path)
         sftp_client.put(local_path, remote_path, confirm=False)
-        logging.info(f"Uploaded → SFTP: {remote_path}")
+        logging.info(f"Uploaded -> SFTP: {remote_path}")
 
         return True
 
@@ -121,12 +141,10 @@ def main():
         logging.critical(f"Config load failed: {e}")
         sys.exit(1)
 
-    # Guard: verify Kerberos ticket exists
     if os.system("klist -s") != 0:
         logging.critical("No valid Kerberos ticket. Run kinit first.")
         sys.exit(1)
 
-    # Setup SFTP
     sftp, transport = None, None
     try:
         transport = paramiko.Transport((conf['sftp']['host'], conf['sftp']['port']))
@@ -137,7 +155,6 @@ def main():
         sftp = paramiko.SFTPClient.from_transport(transport)
         logging.info("SFTP connection established.")
 
-        # Log what's available at root to help debug remote_dir issues
         try:
             root_ls = sftp.listdir('/')
             logging.info(f"SFTP root listing: {root_ls}")
@@ -150,7 +167,6 @@ def main():
         logging.critical(f"SFTP connection failed: {e}")
         sys.exit(1)
 
-    # Run all extractions
     tasks = conf.get('extractions', [])
     success_count = sum(
         process_extraction(task, conf['sql_connection'], sftp, conf['sftp']['remote_dir'])
