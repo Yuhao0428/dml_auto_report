@@ -77,7 +77,7 @@ def process_extraction(task, sql_conf, sftp_client, remote_dir):
                 releasedate      AS [Datum],
                 targetgroupname  AS [Zielgruppe],
                 grp              AS [GRP (%)],
-                bruttoreichweite AS [KTS (Mio.)]
+                bruttosehbeteiligung AS [KTS (Mio.)]
             FROM {table_name}
             WHERE grp IS NOT NULL
                OR bruttoreichweite IS NOT NULL
