@@ -73,7 +73,7 @@ def build_query(table_name):
     return text(f"""
         SELECT
             customername     AS [Kunde],
-            dispositionid    AS [SchaltungsID],
+            dispositionid    AS [Schaltungsid],
             releasedate      AS [Datum],
             targetgroupname  AS [Zielgruppe],
             grp              AS [GRP (%)],
