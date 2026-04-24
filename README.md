@@ -28,6 +28,64 @@ The following must be installed on the Ubuntu server:
 * **SQL Driver:** [Microsoft ODBC Driver 18 for SQL Server](https://learn.microsoft.com/en-us/sql/connect/odbc/linux-mac/installing-the-microsoft-odbc-driver-for-sql-server).
 * **Network:** Access to Port `1437` (SQL) and Port `22` (SFTP).
 
+Before running anything, make sure the following are set up on your Ubuntu server.
+
+### **3.1 System Packages**
+
+These are OS-level dependencies. Install them with `apt`:
+
+```bash
+sudo apt-get update
+sudo apt-get install -y \
+    krb5-user \        # Kerberos client (for kinit, ktutil, kdestroy)
+    unixodbc-dev \     # ODBC header files needed to compile pyodbc
+    python3-venv \     # Lets you create isolated Python environments
+    python3-pip        # Python package installer
+```
+
+> **Note:** During `krb5-user` installation, Ubuntu will ask for your default Kerberos realm. Enter your Active Directory domain in uppercase (e.g. `SERVICEPLAN.DE`). You can also leave it blank and configure `/etc/krb5.conf` manually later.
+
+---
+
+### **3.2 Microsoft ODBC Driver 18 for SQL Server**
+
+This driver is **not** in the standard Ubuntu repositories — install it from Microsoft's package feed:
+
+```bash
+# Import Microsoft's signing key and package source
+curl https://packages.microsoft.com/keys/microsoft.asc | sudo apt-key add -
+curl https://packages.microsoft.com/config/ubuntu/$(lsb_release -rs)/prod.list \
+    | sudo tee /etc/apt/sources.list.d/mssql-release.list
+
+# Install the driver (ACCEPT_EULA is required)
+sudo apt-get update
+sudo ACCEPT_EULA=Y apt-get install -y msodbcsql18
+
+# Verify the driver is registered
+odbcinst -q -d -n "ODBC Driver 18 for SQL Server"
+```
+
+Full reference: [Microsoft ODBC Driver 18 for SQL Server (Linux)](https://learn.microsoft.com/en-us/sql/connect/odbc/linux-mac/installing-the-microsoft-odbc-driver-for-sql-server)
+
+---
+
+### **3.3 Network Access**
+
+Ensure the server can reach the following ports — ask your network/firewall team if unsure:
+
+| Port | Protocol | Purpose |
+|------|----------|---------|
+| `1437` | TCP | MS SQL Server |
+| `22` | TCP | SFTP file transfer |
+
+You can test connectivity with:
+```bash
+nc -zv your-sql-server-hostname 1437
+nc -zv your-sftp-server-hostname 22
+```
+
+---
+
 ---
 
 ## **4. Installation & Setup**

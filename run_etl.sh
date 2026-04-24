@@ -1,7 +1,7 @@
 #!/bin/bash
 set -euo pipefail
 
-PROJECT_DIR="/home/administrator/compose/dml_auto_report"
+PROJECT_DIR="/home/wangyu/projects/dml_auto_report"
 PRINCIPAL="wangyu@SERVICEPLAN.DE"
 KEYTAB="$PROJECT_DIR/wangyu.keytab"
 

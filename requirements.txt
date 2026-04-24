@@ -1,4 +1,5 @@
 pyodbc
+sqlalchemy
 pandas
 paramiko
 pyyaml
